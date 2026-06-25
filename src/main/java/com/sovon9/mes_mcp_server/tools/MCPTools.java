@@ -1,8 +1,12 @@
 package com.sovon9.mes_mcp_server.tools;
 
 import com.sovon9.mes_mcp_server.sdl.GraphQLSDL;
+import graphql.introspection.IntrospectionQuery;
 import graphql.introspection.IntrospectionResultToSchema;
 import graphql.language.*;
+import graphql.schema.idl.SchemaPrinter;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.ai.mcp.annotation.McpArg;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
@@ -22,114 +26,142 @@ public class MCPTools {
 
     private RestClient restClient;
 
+    Logger lOGGER = LoggerFactory.getLogger(MCPTools.class);
+
     public MCPTools() {
-        this.restClient = RestClient.builder().baseUrl("http://localhost:8080/graphql").build();
+        this.restClient = RestClient.builder().baseUrl("http://localhost:5077/graphql").build();
     }
 
-    @McpTool(name = "introspect", description = "Returns the full GraphQL schema in SDL format.\n" +
-            "            Use this to understand available types, queries, mutations, and their fields\n" +
-            "            before constructing any GraphQL queries.")
+    @McpTool(name = "graphql-introspect", description = """
+            Returns the full GraphQL schema introspection.
+            Use this to understand available types, queries, mutations, and their fields before constructing any GraphQL queries.
+            """)
     public String introspect(@McpToolParam(description = "GraphQL type to inspect. If empty, returns full schema") String typeName, @McpToolParam(description = "Depth of nested type expansion. default = 1") Integer depth)
     {
+        String introspectionQuery = IntrospectionQuery.INTROSPECTION_QUERY
+                .replace("isOneOf", "");
         Map query = restClient.post().header(
                         "Content-Type", "application/json")
-                .body(Map.of("query", GraphQLSDL.INTROSPECTION_SCHEMA))
+                .body(Map.of("query", introspectionQuery))
                 .retrieve().body(Map.class);
 
         Object dataObj = query.get("data");
 
         Map<String, Object> data =  (Map<String, Object>)dataObj;
 
-        IntrospectionResultToSchema converter = new IntrospectionResultToSchema();
-        Document fullDocument = converter.createSchemaDefinition(data);
+//        // Filter out null interface names to prevent NPE in IntrospectionResultToSchema
+//        Map<String, Object> schema = (Map<String, Object>) data.get("__schema");
+//        List<Map<String, Object>> types = (List<Map<String, Object>>) schema.get("types");
+//        for (Map<String, Object> type : types) {
+//            List<Map<String, Object>> interfaces = (List<Map<String, Object>>) type.get("interfaces");
+//            if (interfaces != null) {
+//                interfaces.removeIf(iface -> iface.get("name") == null);
+//            }
+//        }
 
-        // Filter what the LLM doesn't need
-        List<String> BUILT_IN_TYPES = List.of(
-                "String", "Boolean", "Int", "Float", "ID",  // scalars
-                "__Schema", "__Type", "__Field", "__InputValue", // introspection types
-                "__EnumValue", "__Directive", "__DirectiveLocation"
-        );
+        Document schemaDocument=null;
+        try {
+            IntrospectionResultToSchema converter = new IntrospectionResultToSchema();
+            schemaDocument = converter.createSchemaDefinition(data);
+        }
+        catch (Exception e)
+        {
+            e.printStackTrace();
+            throw e;
+        }
 
-        List<Definition> cleanDefinitions = fullDocument.getDefinitions().stream()
-                .filter(def -> !(def instanceof DirectiveDefinition))  // remove all directives
-                .filter(def -> {
-                    if (def instanceof TypeDefinition<?> td) {
-                        return !BUILT_IN_TYPES.contains(td.getName()); // remove built-in types
-                    }
-                    return true;
-                })
-                .toList();
+        SchemaPrinter.Options options = SchemaPrinter.Options.defaultOptions()
+                .includeScalarTypes(false) // Hides built-in Scalars (String, Int, etc.)
+                .includeSchemaDefinition(false)
+                .includeDirectives(false);
 
-        // Full schema — return everything
+        // 1. Full schema — return everything
         if (typeName == null || typeName.isBlank()) {
-            Document cleanDocument = Document.newDocument().definitions(cleanDefinitions)
-                    .build();
-            return AstPrinter.printAst(cleanDocument);
+            return new SchemaPrinter(options).print(schemaDocument);
         }
 
         // Type-specific — build a lookup map by type name
 
-        Map<String, TypeDefinition<?>> typeIndex = cleanDefinitions.stream()
+        // 2. Map all definitions by their name for quick O(1) lookup
+        Map<String, TypeDefinition<?>> typeIndex = schemaDocument.getDefinitions().stream()
                 .filter(def -> def instanceof TypeDefinition<?>)
                 .map(def -> (TypeDefinition<?>) def)
                 .collect(Collectors.toMap(TypeDefinition::getName, td -> td));
 
-        // Expand root type + related types up to depth
+        // 3. Expand root type + related types up to depth
         int finalDepth = (depth == null || depth < 1) ? 1 : depth;
         Set<String> visited = new LinkedHashSet<>(); // preserves insertion order
-        collectTypes(typeName, typeIndex, finalDepth, visited);
+        collectTypes(typeName, typeIndex, finalDepth, visited, 0);
 
         if (visited.isEmpty()) {
             return "Type not found: " + typeName;
         }
 
-        // Build SDL from only the collected types
+        // 4. Build SDL from only the collected types
         List<Definition> filteredDefs = visited.stream()
                 .map(typeIndex::get)
                 .filter(Objects::nonNull)
-                .map(td -> (Definition) td)
-                .toList();
+                .collect(Collectors.toList());
 
-        return AstPrinter.printAst(Document.newDocument().definitions(filteredDefs).build());
+        Document filteredDocument = Document.newDocument().definitions(filteredDefs).build();
+
+        return new SchemaPrinter(options).print(filteredDocument);
     }
 
     /**
      * Recursively collects a type and its field types up to maxDepth.
      */
-    private void collectTypes(String typeName, Map<String, TypeDefinition<?>> typeIndex,
-                              int remainingDepth, Set<String> visited) {
-        if (typeName == null || visited.contains(typeName)) return;
+    private void collectTypes(String currentTypeName, Map<String, TypeDefinition<?>> typeIndex,
+                              int maxDepth, Set<String> visited, int currentDepth) {
+        // Notice the 5th parameter above ^^^
 
-        TypeDefinition<?> typeDef = typeIndex.get(typeName);
-        if (typeDef == null) return; // built-in or unknown, skip
-
-        visited.add(typeName);
-
-        if (remainingDepth == 0) return; // don't expand fields further
-
-        // Collect field types based on the kind of type
-        List<String> referencedTypes = new ArrayList<>();
-
-        if (typeDef instanceof ObjectTypeDefinition otd) {
-            otd.getFieldDefinitions().forEach(field -> {
-                referencedTypes.add(unwrapTypeName(field.getType()));
-                field.getInputValueDefinitions().forEach(arg ->
-                        referencedTypes.add(unwrapTypeName(arg.getType())));
-            });
-        } else if (typeDef instanceof InputObjectTypeDefinition iotd) {
-            iotd.getInputValueDefinitions().forEach(field ->
-                    referencedTypes.add(unwrapTypeName(field.getType())));
-        } else if (typeDef instanceof InterfaceTypeDefinition itd) {
-            itd.getFieldDefinitions().forEach(field ->
-                    referencedTypes.add(unwrapTypeName(field.getType())));
-        } else if (typeDef instanceof UnionTypeDefinition utd) {
-            utd.getMemberTypes().forEach(member ->
-                    referencedTypes.add(unwrapTypeName(member)));
+        // Stop conditions: reached max depth, already visited, is a built-in scalar, or doesn't exist
+        if (currentDepth > maxDepth || visited.contains(currentTypeName) ||
+                isBuiltIn(currentTypeName) || !typeIndex.containsKey(currentTypeName)) {
+            return;
         }
 
-        // Recurse into each referenced type
-        referencedTypes.forEach(ref ->
-                collectTypes(ref, typeIndex, remainingDepth - 1, visited));
+        visited.add(currentTypeName);
+        TypeDefinition<?> typeDef = typeIndex.get(currentTypeName);
+
+        // Recursively find types in Object fields
+        if (typeDef instanceof ObjectTypeDefinition objDef) {
+            for (FieldDefinition field : objDef.getFieldDefinitions()) {
+                String fieldTypeName = extractRawTypeName(field.getType());
+                // Pass currentDepth + 1 to the next level
+                collectTypes(fieldTypeName, typeIndex, maxDepth, visited, currentDepth + 1);
+            }
+        }
+        // Recursively find types in Input Object fields
+        else if (typeDef instanceof InputObjectTypeDefinition inputDef) {
+            for (InputValueDefinition field : inputDef.getInputValueDefinitions()) {
+                String fieldTypeName = extractRawTypeName(field.getType());
+                // Pass currentDepth + 1 to the next level
+                collectTypes(fieldTypeName, typeIndex, maxDepth, visited, currentDepth + 1);
+            }
+        }
+    }
+
+    /**
+     * Recursively unwraps NonNull (!) and List ([]) wrappers to get the base type name.
+     */
+    private String extractRawTypeName(Type<?> type) {
+        if (type instanceof NonNullType nnt) {
+            return extractRawTypeName(nnt.getType());
+        } else if (type instanceof ListType lt) {
+            return extractRawTypeName(lt.getType());
+        } else if (type instanceof TypeName tn) {
+            return tn.getName();
+        }
+        return "";
+    }
+
+    /**
+     * Checks if a type is a GraphQL built-in scalar or introspection type.
+     */
+    private boolean isBuiltIn(String typeName) {
+        return typeName.startsWith("__") ||
+                List.of("String", "Boolean", "Int", "Float", "ID").contains(typeName);
     }
 
     /**
@@ -143,14 +175,15 @@ public class MCPTools {
         return null;
     }
 
-//    private Map<String, Object> findTypeByName(List<Map<String, Object>> types, String typeName) {
-//        return types.stream().filter(type->typeName.equals(type.get("name")))
-//                .findFirst().orElse(null);
-//    }
 
-
-    @McpTool(name = "execute-query", description = "Executes graphql query")
-    public Map<String, Object> executeQuery(@RequestBody String query, @RequestParam Map<String, Object> variables)
+    @McpTool(name = "execute-query",
+            description = """
+            Executes a graphql query operation against the backend.
+            
+            ⚠️If you do not know the exact schema, use the 'introspect' tool first to gather the correct fields and types.
+            """)
+    public Map<String, Object> executeQuery(@McpToolParam(description = "The GraphQL query or mutation string. Must be a valid GraphQL payload.") String query,
+                                            @McpToolParam(description = "A JSON object containing the variables for the query.") Map<String, Object> variables)
     {
         Map<String, Object> bodymap =  new HashMap<>();
         bodymap.put("query", query);

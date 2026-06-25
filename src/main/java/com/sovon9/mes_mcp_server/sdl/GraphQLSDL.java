@@ -5,28 +5,13 @@ public class GraphQLSDL {
             {
                 __schema {
                     queryType { name }
-                    mutationType { name }
-                    subscriptionType { name }
-                    directives {
-                        name
-                        locations
-                        args {
-                            name
-                            type {
-                                kind
-                                name
-                                ofType { kind name }
-                            }
-                        }
-                    }
                     types {
                        kind
                        name
-                       enumValues(includeDeprecated: true) {
-                          name
-                       }
+                       description
                        fields(includeDeprecated: true) {
                            name
+                           description
                            args {
                                 name
                                 type {
@@ -54,9 +39,12 @@ public class GraphQLSDL {
                            type {
                               kind
                               name
-                              ofType { kind name }
+                              ofType { kind name ofType { kind name } }
                            }
                        }
+                       interfaces { name }
+                       enumValues(includeDeprecated: true) { name }
+                       possibleTypes { name }
                     }
                 }
             }
