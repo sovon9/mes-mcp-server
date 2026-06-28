@@ -1,0 +1,13 @@
+queries:
+  activities:
+    - activityId
+    - title
+    - activityStatusId
+    - status:
+        - id
+        - label
+
+  productionLines:
+    - productionLineId
+    - departmentId
+    - line

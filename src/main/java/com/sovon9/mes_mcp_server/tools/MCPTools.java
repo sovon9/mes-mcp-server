@@ -10,6 +10,9 @@ import org.slf4j.LoggerFactory;
 import org.springframework.ai.mcp.annotation.McpArg;
 import org.springframework.ai.mcp.annotation.McpTool;
 import org.springframework.ai.mcp.annotation.McpToolParam;
+import org.springframework.beans.factory.annotation.Value;
+import org.springframework.boot.health.actuate.endpoint.HealthEndpoint;
+import org.springframework.boot.health.contributor.Status;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestBody;
@@ -25,11 +28,16 @@ import java.util.stream.Collectors;
 public class MCPTools {
 
     private RestClient restClient;
+//    private HealthEndpoint healthEndpoint;
+
+    @Value("${graphql-service-url:}")
+    private String graphqlService;
 
     Logger lOGGER = LoggerFactory.getLogger(MCPTools.class);
 
     public MCPTools() {
-        this.restClient = RestClient.builder().baseUrl("http://localhost:5077/graphql").build();
+        this.restClient = RestClient.builder().build();
+//        this.healthEndpoint = healthEndpoint;
     }
 
     @McpTool(name = "graphql-introspect", description = """
@@ -40,7 +48,7 @@ public class MCPTools {
     {
         String introspectionQuery = IntrospectionQuery.INTROSPECTION_QUERY
                 .replace("isOneOf", "");
-        Map query = restClient.post().header(
+        Map query = restClient.post().uri(graphqlService).header(
                         "Content-Type", "application/json")
                 .body(Map.of("query", introspectionQuery))
                 .retrieve().body(Map.class);
@@ -179,20 +187,56 @@ public class MCPTools {
     @McpTool(name = "execute-query",
             description = """
             Executes a graphql query operation against the backend.
-            
+            ⚠️ STRICT RULE:: If the user does not specify exact fields, first read 'config://graphql/query-defaults'
+            to get the preferred default field names for the root query.
             ⚠️If you do not know the exact schema, use the 'introspect' tool first to gather the correct fields and types.
             """)
-    public Map<String, Object> executeQuery(@McpToolParam(description = "The GraphQL query or mutation string. Must be a valid GraphQL payload.") String query,
-                                            @McpToolParam(description = "A JSON object containing the variables for the query.") Map<String, Object> variables)
+    public Map<String, Object> executeQuery(
+            @McpToolParam(description = "The GraphQL query or mutation string. Must be a valid GraphQL payload.") String query,
+            @McpToolParam(description = "A JSON object containing the variables for the query.") Map<String, Object> variables)
     {
         Map<String, Object> bodymap =  new HashMap<>();
         bodymap.put("query", query);
         bodymap.put("variables", variables == null ? Map.of() : variables);
 
-        return restClient.post()
+        return restClient.post().uri(graphqlService)
                 .body(bodymap)
                 .retrieve()
                 .body(Map.class);
     }
+
+//    @McpTool(name = "check-system-health", description = """
+//            Returns the real-time operational status of the MCP gateway and downstream backend GraphQL services.
+//            Run this tool if network errors occur, queries time out, or to verify connection stability.
+//            """)
+//    public Map<String, Object> health()
+//    {
+//        Map<String, Object> healthStatus = new HashMap<>();
+//        String mcpServerStataus = healthEndpoint.health().getStatus().equals(Status.UP)? "HEALTHY":"DEGRADED";
+//        healthStatus.put("mcp-server", mcpServerStataus);
+//
+//        try {
+//            Map<?, ?> backendResponse = restClient.get()
+//                    .uri("/actuator/health")
+//                    .retrieve()
+//                    .body(Map.class);
+//
+//            String statusStr = (backendResponse != null && backendResponse.containsKey("status"))
+//                    ? String.valueOf(backendResponse.get("status"))
+//                    : "UNKNOWN";
+//
+//            String backendHealthStatus = statusStr.equals(Status.UP) ? "HEALTHY" : "DEGRADED";
+//            healthStatus.put("graphql-server",backendHealthStatus);
+//        }
+//        catch (Exception e)
+//        {
+//            healthStatus.put("graphql-server","DEGRADED");
+//        }
+//
+//        boolean overAllStatus = healthStatus.entrySet().stream().allMatch(es -> es.getValue().equals(Status.UP));
+//        healthStatus.put("overall_system_status", overAllStatus);
+//
+//        return healthStatus;
+//    }
 
 }
