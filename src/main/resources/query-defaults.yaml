@@ -1,13 +1,14 @@
-queries:
-  activities:
-    - activityId
-    - title
-    - activityStatusId
-    - status:
-        - id
-        - label
-
-  productionLines:
-    - productionLineId
-    - departmentId
-    - line
+mcp:
+  graphql:
+    defaults:
+      activity:
+        - activityId
+        - title
+        - status
+          - activityStatusDesc
+        - type
+          - activityDesc
+      productionLines:
+        - productionLineId
+        - departmentId
+        - line

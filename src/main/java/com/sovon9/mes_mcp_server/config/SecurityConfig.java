@@ -1,4 +1,4 @@
-package com.sovon9.mes_mcp_server.configure;
+package com.sovon9.mes_mcp_server.config;
 
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;

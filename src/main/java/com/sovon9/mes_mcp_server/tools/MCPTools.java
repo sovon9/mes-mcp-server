@@ -1,5 +1,6 @@
 package com.sovon9.mes_mcp_server.tools;
 
+import com.sovon9.mes_mcp_server.config.GraphQlDefaultsProperties;
 import com.sovon9.mes_mcp_server.sdl.GraphQLSDL;
 import graphql.introspection.IntrospectionQuery;
 import graphql.introspection.IntrospectionResultToSchema;
@@ -33,19 +34,29 @@ public class MCPTools {
     @Value("${graphql-service-url:}")
     private String graphqlService;
 
+    private GraphQlDefaultsProperties defaultsProperties;
+
     Logger lOGGER = LoggerFactory.getLogger(MCPTools.class);
 
-    public MCPTools() {
+    public MCPTools(GraphQlDefaultsProperties defaultsProperties) {
         this.restClient = RestClient.builder().build();
+        this.defaultsProperties = defaultsProperties;
 //        this.healthEndpoint = healthEndpoint;
     }
 
     @McpTool(name = "graphql-introspect", description = """
             Returns the full GraphQL schema introspection.
+            
+            ⚠️CRITICAL: When constructing queries, you are strictly forbidden from guessing
+            or adding fields outside of the 'preferred_default_fields' list provided in the response
+            
             Use this to understand available types, queries, mutations, and their fields before constructing any GraphQL queries.
             """)
-    public String introspect(@McpToolParam(description = "GraphQL type to inspect. If empty, returns full schema") String typeName, @McpToolParam(description = "Depth of nested type expansion. default = 1") Integer depth)
+    public Map<String, Object> introspect(@McpToolParam(description = "GraphQL type name to introspect (e.g., Downtime, Activity). If empty, returns full schema") String typeName,
+                             @McpToolParam(description = "Depth of nested type expansion. default = 1") Integer depth)
     {
+        Map<String, Object> response=new HashMap<>();
+        response.put("typeName", typeName);
         String introspectionQuery = IntrospectionQuery.INTROSPECTION_QUERY
                 .replace("isOneOf", "");
         Map query = restClient.post().uri(graphqlService).header(
@@ -85,7 +96,8 @@ public class MCPTools {
 
         // 1. Full schema — return everything
         if (typeName == null || typeName.isBlank()) {
-            return new SchemaPrinter(options).print(schemaDocument);
+            response.put("introspection", schemaDocument);
+            return response;
         }
 
         // Type-specific — build a lookup map by type name
@@ -102,7 +114,8 @@ public class MCPTools {
         collectTypes(typeName, typeIndex, finalDepth, visited, 0);
 
         if (visited.isEmpty()) {
-            return "Type not found: " + typeName;
+            response.put("ERROR","Type not found: " + typeName);
+            return response;
         }
 
         // 4. Build SDL from only the collected types
@@ -112,8 +125,29 @@ public class MCPTools {
                 .collect(Collectors.toList());
 
         Document filteredDocument = Document.newDocument().definitions(filteredDefs).build();
+        response.put("introspection", filteredDocument);
 
-        return new SchemaPrinter(options).print(filteredDocument);
+        // Inject structural directives right alongside the technical metadata
+        Map<String, Object> guidelines = new HashMap<>();
+
+        Map<String, List<String>> defaults = defaultsProperties.getDefaults();
+        boolean containsDefault = defaults.containsKey(typeName.toLowerCase());
+        if("Query".equalsIgnoreCase(typeName))
+        {
+            guidelines.put("all_query_preferred_defaults", defaults);
+            guidelines.put("instruction", "This is the root Query type. When selecting any of these queries, " +
+                    "you MUST default to selecting the specific fields outlined in this dictionary.");
+            response.put("business_rules", guidelines);
+        }
+        else if(defaults.containsKey(typeName.toLowerCase()))
+        {
+            List<String> typeDefaults = defaults.get(typeName.toLowerCase());
+            guidelines.put("preferred_default_fields", typeDefaults);
+            guidelines.put("instruction", "When constructing a query for '" + typeName +
+                    "', select these default fields unless the user explicitly requested alternative columns.");
+            response.put("business_rules", guidelines);
+        }
+        return response;
     }
 
     /**
@@ -187,8 +221,7 @@ public class MCPTools {
     @McpTool(name = "execute-query",
             description = """
             Executes a graphql query operation against the backend.
-            ⚠️ STRICT RULE:: If the user does not specify exact fields, first read 'config://graphql/query-defaults'
-            to get the preferred default field names for the root query.
+            ⚠️ STRICT RULE:: If the user does not specify exact fields, use default field names for the root query.
             ⚠️If you do not know the exact schema, use the 'introspect' tool first to gather the correct fields and types.
             """)
     public Map<String, Object> executeQuery(
