@@ -222,7 +222,7 @@ public class MCPTools {
             description = """
             Executes a graphql query operation against the backend.
             ⚠️If you do not know the exact schema, use the 'introspect' tool first to gather the correct fields and types.
-            ⚠️ STRICT RULE:: If the user does not specify exact fields, use default field names for the root query.
+            ⚠️ STRICT RULE:: If the user does not specify exact fields, do introspect first and use default field names for the root query.
             """)
     public Map<String, Object> executeQuery(
             @McpToolParam(description = "The GraphQL query or mutation string. Must be a valid GraphQL payload.") String query,

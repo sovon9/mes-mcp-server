@@ -8,7 +8,10 @@ mcp:
           - activityStatusDesc
         - type
           - activityDesc
-      productionLines:
+      productionlines:
         - productionLineId
         - departmentId
         - line
+      productionunit:
+        - productionUnitId
+        - unit
