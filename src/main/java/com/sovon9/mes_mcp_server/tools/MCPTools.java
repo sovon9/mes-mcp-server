@@ -5,6 +5,7 @@ import com.sovon9.mes_mcp_server.sdl.GraphQLSDL;
 import graphql.introspection.IntrospectionQuery;
 import graphql.introspection.IntrospectionResultToSchema;
 import graphql.language.*;
+import graphql.parser.Parser;
 import graphql.schema.idl.SchemaPrinter;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -50,7 +51,8 @@ public class MCPTools {
             ⚠️CRITICAL: When constructing queries, you are strictly forbidden from guessing
             or adding fields outside of the 'preferred_default_fields' list provided in the response
             
-            Use this to understand available types, queries, mutations, and their fields before constructing any GraphQL queries.
+            Use this to understand available types, queries, and their fields before constructing any GraphQL queries.
+            This server is read-only: mutations may appear in the schema but cannot be executed.
             """)
     public Map<String, Object> introspect(@McpToolParam(description = "GraphQL type name to introspect (e.g., Downtime, Activity). If empty, returns full schema") String typeName,
                              @McpToolParam(description = "Depth of nested type expansion. default = 1") Integer depth)
@@ -218,16 +220,54 @@ public class MCPTools {
     }
 
 
+    /**
+     * Read-only guard: the document must be parseable and contain only {@code query} operations
+     * (plus fragments). Mutations, subscriptions and anything else are refused before the gateway is called.
+     *
+     * @return a message describing the violation, or {@code null} if the query is allowed
+     */
+    public static String readOnlyViolation(String query) {
+        if (query == null || query.isBlank()) {
+            return "query must not be empty";
+        }
+        Document document;
+        try {
+            document = new Parser().parseDocument(query);
+        } catch (Exception e) {
+            return "query could not be parsed: " + e.getMessage();
+        }
+        boolean hasOperation = false;
+        for (Definition<?> definition : document.getDefinitions()) {
+            if (definition instanceof OperationDefinition op) {
+                if (op.getOperation() != OperationDefinition.Operation.QUERY) {
+                    return "Only read-only 'query' operations are allowed; "
+                            + op.getOperation().name().toLowerCase() + " operations are rejected";
+                }
+                hasOperation = true;
+            } else if (!(definition instanceof FragmentDefinition)) {
+                return "Only 'query' operations (and fragments) are allowed";
+            }
+        }
+        return hasOperation ? null : "query must contain a 'query' operation";
+    }
+
     @McpTool(name = "execute-query",
             description = """
-            Executes a graphql query operation against the backend.
+            Executes a READ-ONLY graphql query operation against the backend.
+            ⚠️Only 'query' operations are allowed. Mutations and subscriptions are rejected by the server — never attempt them.
             ⚠️If you do not know the exact schema, use the 'introspect' tool first to gather the correct fields and types.
             ⚠️ STRICT RULE:: If the user does not specify exact fields, do introspect first and use default field names for the root query.
             """)
     public Map<String, Object> executeQuery(
-            @McpToolParam(description = "The GraphQL query or mutation string. Must be a valid GraphQL payload.") String query,
+            @McpToolParam(description = "The GraphQL query string. Must be a valid GraphQL 'query' operation; mutations and subscriptions are not allowed.") String query,
             @McpToolParam(description = "A JSON object containing the variables for the query.") Map<String, Object> variables)
     {
+        String violation = readOnlyViolation(query);
+        if (violation != null) {
+            lOGGER.warn("execute-query rejected: {}", violation);
+            return Map.of("errors", List.of(Map.of("message", violation)));
+        }
+
         Map<String, Object> bodymap =  new HashMap<>();
         bodymap.put("query", query);
         bodymap.put("variables", variables == null ? Map.of() : variables);

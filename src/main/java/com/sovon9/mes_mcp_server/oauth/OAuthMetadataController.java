@@ -49,7 +49,7 @@ public class OAuthMetadataController {
         meta.put("response_types_supported",            List.of("code"));
         meta.put("grant_types_supported",               List.of("authorization_code", "refresh_token"));
         meta.put("code_challenge_methods_supported",    List.of("S256"));
-        meta.put("token_endpoint_auth_methods_supported", List.of("none", "client_secret_post"));
+        meta.put("token_endpoint_auth_methods_supported", List.of("none"));
         return meta;
     }
 

@@ -3,6 +3,9 @@ package com.sovon9.mes_mcp_server.config;
 import org.springframework.boot.context.properties.ConfigurationProperties;
 import org.springframework.stereotype.Component;
 
+import java.util.ArrayList;
+import java.util.List;
+
 /**
  * Configuration properties for the OAuth PKCE proxy layer.
  * This MCP server acts as an Authorization Server front-end that proxies
@@ -55,7 +58,38 @@ public class OAuthProperties {
      */
     private String upstreamClientSecret;
 
+    /**
+     * Hosts an https redirect_uri may point to when a client registers via {@code POST /register}
+     * (exact, case-insensitive match — no wildcards). Empty means no external host is allowed.
+     * Loopback http redirects ({@code localhost}, {@code 127.0.0.1}, {@code [::1]}) are always allowed.
+     */
+    private List<String> allowedRedirectHosts = new ArrayList<>();
+
+    /**
+     * Private-use URI schemes (RFC 8252 §7.1, e.g. {@code cursor}, {@code vscode}) that native
+     * clients may register as redirect_uri. Empty means none.
+     */
+    private List<String> allowedCustomSchemes = new ArrayList<>();
+
+    /** Maximum number of redirect_uris a single client may register. */
+    private int maxRedirectUris = 5;
+
+    /** Upper bound on registered clients, to stop unauthenticated /register from filling the table. */
+    private long maxRegisteredClients = 10_000;
+
     // ── Getters & Setters ──────────────────────────────────────────────────────
+
+    public List<String> getAllowedRedirectHosts() { return allowedRedirectHosts; }
+    public void setAllowedRedirectHosts(List<String> allowedRedirectHosts) { this.allowedRedirectHosts = allowedRedirectHosts; }
+
+    public List<String> getAllowedCustomSchemes() { return allowedCustomSchemes; }
+    public void setAllowedCustomSchemes(List<String> allowedCustomSchemes) { this.allowedCustomSchemes = allowedCustomSchemes; }
+
+    public int getMaxRedirectUris() { return maxRedirectUris; }
+    public void setMaxRedirectUris(int maxRedirectUris) { this.maxRedirectUris = maxRedirectUris; }
+
+    public long getMaxRegisteredClients() { return maxRegisteredClients; }
+    public void setMaxRegisteredClients(long maxRegisteredClients) { this.maxRegisteredClients = maxRegisteredClients; }
 
     public String getIssuerUri() { return issuerUri; }
     public void setIssuerUri(String issuerUri) { this.issuerUri = issuerUri; }
