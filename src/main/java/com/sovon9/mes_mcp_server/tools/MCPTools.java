@@ -15,12 +15,15 @@ import org.springframework.ai.mcp.annotation.McpToolParam;
 import org.springframework.beans.factory.annotation.Value;
 import org.springframework.boot.health.actuate.endpoint.HealthEndpoint;
 import org.springframework.boot.health.contributor.Status;
+import org.springframework.security.core.context.SecurityContextHolder;
+import org.springframework.security.oauth2.server.resource.authentication.JwtAuthenticationToken;
 import org.springframework.stereotype.Component;
 import org.springframework.web.bind.annotation.GetMapping;
 import org.springframework.web.bind.annotation.RequestBody;
 import org.springframework.web.bind.annotation.RequestParam;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.client.RestClient;
+import org.springframework.web.client.RestClientResponseException;
 
 import java.util.*;
 import java.util.stream.Collectors;
@@ -272,10 +275,38 @@ public class MCPTools {
         bodymap.put("query", query);
         bodymap.put("variables", variables == null ? Map.of() : variables);
 
-        return restClient.post().uri(graphqlService)
-                .body(bodymap)
-                .retrieve()
-                .body(Map.class);
+        try {
+            return restClient.post().uri(graphqlService)
+                    .header("Authorization", callerBearerToken())
+                    .body(bodymap)
+                    .retrieve()
+                    .body(Map.class);
+        } catch (RestClientResponseException e) {
+            // Expected when the backend enforces per-user/per-scope authorization on this caller's own
+            // token — e.g. a plant or record they are not entitled to. Surface it, don't swallow it.
+            lOGGER.warn("Backend rejected execute-query: {} {}", e.getStatusCode(), e.getStatusText());
+            return Map.of("errors", List.of(Map.of(
+                    "message", "Backend rejected the request: " + e.getStatusCode() + " " + e.getStatusText())));
+        }
+    }
+
+    /**
+     * The bearer token of the user currently authenticated on this MCP request — the same JWT Claude
+     * attached to this call, already validated by Spring Security's resource-server filter before this
+     * method ran. Never a token this server holds for itself. Forwarding it lets the backend GraphQL
+     * services — which know each user's plant/record scopes — decide what this user may see; this
+     * server has no visibility into that and must not decide it itself.
+     *
+     * @throws IllegalStateException if no authenticated JWT is present. Should be unreachable, since
+     *         {@code SecurityConfig} requires authentication on every request that can reach a tool
+     *         method — but calling the backend without the caller's identity would silently defeat that
+     *         authorization, so this fails closed instead of falling back to no header or a service identity.
+     */
+    private String callerBearerToken() {
+        if (SecurityContextHolder.getContext().getAuthentication() instanceof JwtAuthenticationToken auth) {
+            return "Bearer " + auth.getToken().getTokenValue();
+        }
+        throw new IllegalStateException("No authenticated caller JWT for this request — refusing to call the backend");
     }
 
 //    @McpTool(name = "check-system-health", description = """
